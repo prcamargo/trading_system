@@ -1,4 +1,6 @@
 import pandas as pd
+#from bot_trader import logging
+from logger import log
 
 ###################### ESTRATEGIAS ######################
 # executa a estrategia de media movel
@@ -18,12 +20,14 @@ def getMovingAvarageTradeStrategy(stock_data, operation_code,fast_window = 7, sl
         ma_trade_decision = True # compra
     else:
         ma_trade_decision = False
-
+    
     #print('----------------------------------------------------------')
-    print('Estratégia executada: Moving Average')
-    print(f'{operation_code}\n | {last_ma_fast:.3f} = Última Média Rápida \n | {last_ma_slow:.3f} = Última Média Lenta')
-    print(f'Decisao de posição: {"Comprar " if ma_trade_decision == True else "Vender"}')
-    print('----------------------------------------------------------')
+    log.info('Estratégia executada: Moving Average')
+    log.info(f'{operation_code}')
+    log.info(f' └──{last_ma_fast:.3f} = Última Média Rápida')
+    log.info(f' └──{last_ma_slow:.3f} = Última Média Lenta')
+    log.info(f'Decisao de posição: {"Comprar " if ma_trade_decision == True else "Vender"}')
+    log.info('----------------------------------------------------------')
 
     return ma_trade_decision;
 

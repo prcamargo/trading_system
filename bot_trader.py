@@ -1,15 +1,13 @@
 import os
 import time
 from datetime import datetime
-import logging
 
 import pandas as pd
 from binance.client import Client
 from binance.enums import *
 from dotenv import load_dotenv
 
-from logger import *
-
+from logger import log
 from bot_strategy import * # importa as estrategias do arquivo bot_strategy.py
 
 load_dotenv() # carregar .env
@@ -20,22 +18,13 @@ secret_key = os.getenv('BINANCE_API_SECRET')
 
 # -------------------------------------------
 # configuração 
-# STOCK_CODE = "BNB"
-# OPERATION_CODE = "BNBBTC"
 STOCK_CODE = "BTC"
 OPERATION_CODE = "BTCUSDT"
 CANDLE_PERIOD = Client.KLINE_INTERVAL_15MINUTE
 TRADED_QUANTITY = 0.00002 
+TRADED_PERCENTAGE = 100
 
 # -------------------------------------------
-
-# Define logger
-logging.basicConfig(
-    filename = 'logs/trading_bot.log',
-    level = logging.INFO,
-    format = '%(asctime)s - %(levelname)s - %(message)s'
-)
-
 # Classe principal
 
 class BinanceTraderBot():
@@ -53,8 +42,8 @@ class BinanceTraderBot():
 
         self.updateAllData() # Busca e atualiza todos os dados
 
-        print('----------------------------------------------------------')
-        print('Robo Trader iniciado...')
+        log.info('----------------------------------------------------------')
+        log.info('Robo Trader iniciado...')
     # atualiza todos os dados da conta
     def updateAllData(self):
         self.account_data = self.getUpdateAccountData() # dados atualizado do usuario e sua carteira
@@ -128,48 +117,43 @@ class BinanceTraderBot():
     # -------------------------------------------------------
     # compra a ação
     def buyStock(self):
-        
-        if self.actual_trade_position == False: # se a posição for vendida
-            order_buy = self.client_binance.create_order(
-                symbol = self.operation_code,
-                side = SIDE_BUY,
-                type = ORDER_TYPE_MARKET,
-                quantity = self.traded_quantity,
-            )
-            # order_buy = self.client_binance.order_market_buy(
-            #     symbol = self.operation_code,
-            #     quantity= self.traded_quantity
-            # )
-            self.actual_trade_position = True # Define posição como comprada
-            createLogOrder(order_buy) # cria um log
-            return order_buy
-        
-        else: # se ocorreu algum erro
-            logging.warning('Erro ao comprar')
-            print('Erro ao comprar ')
-            return False
+        try:
+            if self.actual_trade_position == False: # se a posição for vendida
+                order_buy = self.client_binance.create_order(
+                    symbol = self.operation_code,
+                    side = SIDE_BUY,
+                    type = ORDER_TYPE_MARKET,
+                    quantity = self.traded_quantity,
+                )
+                self.actual_trade_position = True # Define posição como comprada
+                log.createLogOrder(order_buy) # cria um log
+                return order_buy
+            
+            else: # se ocorreu algum erro
+                log.warning('Erro ao comprar')
+                return False
+        except Exception as e:
+            log.error(f"Erro ao comprar: {e}")
         
     # vende a ação
     def sellStock(self):
-        if self.actual_trade_position == True: # se a posição for comprada
-            order_sell = self.client_binance.create_order(
-                symbol = self.operation_code,
-                side = SIDE_SELL,
-                type = ORDER_TYPE_MARKET,
-                quantity = int(self.last_stock_account_balance * 1000) / 1000
-            )
-            # order_sell = self.client_binance.order_market_sell(
-            #     symbol=self.operation_code,
-            #     quantity= int(self.last_stock_account_balance * 1000) / 1000
-            # )
-            self.actual_trade_position = False # define posição como vendida
-            createLogOrder(order_sell) # cria log
-            return order_sell
-        
-        else: # se ocorreu algum erro
-            logging.warning('Erro ao comprar')
-            print('Erro ao comprar')
-            return False
+        try:
+            if self.actual_trade_position == True: # se a posição for comprada
+                order_sell = self.client_binance.create_order(
+                    symbol = self.operation_code,
+                    side = SIDE_SELL,
+                    type = ORDER_TYPE_MARKET,
+                    quantity = int(self.last_stock_account_balance * 1000) / 1000
+                )
+                self.actual_trade_position = False # define posição como vendida
+                log.createLogOrder(order_sell) # cria log
+                return order_sell
+            
+            else: # se ocorreu algum erro
+                log.warning('Erro ao comprar')
+                return False
+        except Exception as e:
+            log.error(f"Erro ao vender: {e}")
 
 
     def execute(self):
@@ -177,10 +161,9 @@ class BinanceTraderBot():
         # atualiza todos os dados
         self.updateAllData()
 
-        print('----------------------------------------------------------')
-        print(f'Executado ({datetime.now().strftime("%Y-%m-%d %H-%M-%S")})') # add o horario atual 
-        print(f'Posição atual: {"Comprado" if MaTrader.actual_trade_position else "Vendido"}')
-        print(f'Balanço atual: {MaTrader.last_stock_account_balance} ({self.stock_code})')
+        log.info(f'Executado ({datetime.now().strftime("%Y-%m-%d %H:%M:%S")})') # add o horario atual 
+        log.info(f'Posição atual: {"Comprado" if MaTrader.actual_trade_position else "Vendido"}')
+        log.info(f'Balanço atual: {MaTrader.last_stock_account_balance} ({self.stock_code})')
 
         # executa a estrategia de media movel 
         ma_trade_decision = getMovingAvarageTradeStrategy(self.stock_data, self.operation_code)
@@ -209,12 +192,9 @@ class BinanceTraderBot():
             self.updateAllData()
             self.printStock()
 
-        print('----------------------------------------------------------')
-
-
 # --------------------------------------------------------------
 
-MaTrader = BinanceTraderBot(STOCK_CODE, OPERATION_CODE, TRADED_QUANTITY, 100, CANDLE_PERIOD)
+MaTrader = BinanceTraderBot(STOCK_CODE, OPERATION_CODE, TRADED_QUANTITY, TRADED_PERCENTAGE, CANDLE_PERIOD)
 
 while(1):
     MaTrader.execute()

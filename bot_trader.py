@@ -1,29 +1,37 @@
-import threading
-import logging
 import os
-import numpy as np
-import pandas as pd
-import talib
-from binance.client import Client
-from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_LIMIT, TIME_IN_FORCE_GTC
-from datetime import datetime
-from dotenv import load_dotenv
 import time
 import json
-from dash import Dash, dcc, html
-from dash.dependencies import Input, Output
+import sys
+import argparse
+
+import pandas as pd
+from binance.client import Client
+from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_LIMIT, TIME_IN_FORCE_GTC
+from dotenv import load_dotenv
+
+from strategy import *
+from db import *
+from logger import Logger
+
+db = DatabaseManager() # inicia db sqlite
+
 
 # Configurações
-load_dotenv()
+load_dotenv() #carregando variaveis da bianance
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 USE_TESTNET = True
 
-client = Client(API_KEY, API_SECRET)  # Use testnet conforme necessário
+# Variáveis globais
+parser = argparse.ArgumentParser(description="Bot Trader")
+parser.add_argument("-s", "--symbol", type=str, required=True, default="BTCUSDT", help="symbol para trader")
+parser.add_argument("-b", "--base_asset", type=str, required=True, default="BTC", help="symbol para trader")
+parser.add_argument("-q", "--quote_asset", type=str, required=True, default="USDT", help="symbol para trader")
+args = parser.parse_args()
 
-SYMBOL = "BTCUSDT"
-BASE_ASSET = "BTC"
-QUOTE_ASSET = "USDT"
+SYMBOL = args.symbol
+BASE_ASSET = args.base_asset
+QUOTE_ASSET = args.quote_asset
 INTERVAL = '1h'
 LOOKBACK = '200'
 QUANTITY = 0.0001
@@ -33,40 +41,30 @@ MIN_QUOTE_BALANCE = 10
 
 STATUS_FILE = 'bot_status.json'
 HISTORY_FILE = 'trade_history.csv'
+CURRENT_TRADE = {"side": None, "entry_price": None}
 LOG_FILE = 'bot_trader.log'
-LOG_LEVEL = 'INFO'
+LOG_LEVEL='INFO'
 
-# Configuração de logs
-logger = logging.getLogger('BotTrader')
-logger.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+logger_instance = Logger(name="Bot Trader", log_file=LOG_FILE, level=LOG_LEVEL)
+logger = logger_instance.get_logger()
 
-file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(formatter)
-
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(formatter)
-
-# Add the handlers to the logger
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-# Variáveis globais
-current_trade = {"side": None, "entry_price": None}
+# iniciando api binance
+client = Client(API_KEY, API_SECRET)  # Use testnet conforme necessário
 
 # Funções de persistência
 def load_status():
-    global current_trade
-    if os.path.exists(STATUS_FILE):
-        with open(STATUS_FILE, 'r') as file:
-            current_trade.update(json.load(file))
+    try:
+        with open(STATUS_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.info('Criando arquivo bot_status.json')
+        with open(STATUS_FILE, 'w') as f:
+            json.dump(CURRENT_TRADE, f)
 
 def save_status():
-    with open(STATUS_FILE, 'w') as file:
-        json.dump(current_trade, file)
+    with open(STATUS_FILE, 'w') as f:
+        json.dump(CURRENT_TRADE, f)
 
 # Verificar saldo
 def check_balance():
@@ -83,38 +81,6 @@ def check_balance():
     except Exception as e:
         logger.error(f"Erro ao verificar saldo: {e}")
         return False
-
-
-# Estratégias
-def moving_average_strategy(data, short_window=10, long_window=50):
-    data['SMA_Short'] = talib.SMA(data['close'], timeperiod=short_window)
-    data['SMA_Long'] = talib.SMA(data['close'], timeperiod=long_window)
-    data['Signal'] = data['SMA_Short'] > data['SMA_Long']
-    return data
-
-def rsi_strategy(data, rsi_period=14, overbought=70, oversold=30):
-    data['RSI'] = talib.RSI(data['close'], timeperiod=rsi_period)
-    #data['Signal'] = (data['RSI'] < oversold) - (data['RSI'] > overbought)
-
-    buy_condition = data['RSI'] < overbought
-    sell_condition = data['RSI'] > overbought
-
-    data['Signal'] = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
-
-    return data
-
-def breakout_strategy(data):
-    data['High_Max'] = data['high'].rolling(window=10).max()
-    data['Low_Min'] = data['low'].rolling(window=10).min()
-    
-    # Condição de breakout para compra e venda
-    buy_condition = data['close'] > data['High_Max']
-    sell_condition = data['close'] < data['Low_Min']
-
-    # Atribuindo 1 para compra, -1 para venda, e 0 para manter
-    data['Signal'] = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
-
-    return data
 
 def fetch_data(symbol, interval, lookback):
     """
@@ -148,7 +114,7 @@ def fetch_data(symbol, interval, lookback):
 
 # Função para executar ordens
 def execute_order_with_risk(symbol, side, quantity, price):
-    global current_trade
+    global CURRENT_TRADE
     try:
         order = client.create_order(
             symbol=symbol,
@@ -158,16 +124,25 @@ def execute_order_with_risk(symbol, side, quantity, price):
             quantity=quantity,
             price=round(price, 2),
         )
-        current_trade["side"] = side
-        current_trade["entry_price"] = price
-        save_status()
+        CURRENT_TRADE["side"] = side
+        CURRENT_TRADE["entry_price"] = price
+        #save_status()
+
+        db.save_trade_history(side, quantity, price) # salva trade realizado 
+
+        db.save_application_status(side, price) # atualiza o status 
+
         logger.info(f"Ordem executada: {order}")
     except Exception as e:
         logger.error(f"Erro ao executar ordem: {e}")
 
 # Bot principal
 def execute_bot():
-    load_status()
+    #load_status()
+
+    last_status = db.get_last_application_status()
+    print(last_status)
+
     while True:
         logger.info("-------------------------------------------------------------")
         
@@ -178,10 +153,9 @@ def execute_bot():
         try:
             
             data = fetch_data(SYMBOL, INTERVAL, LOOKBACK)
-            data = moving_average_strategy(data)
-            data = rsi_strategy(data)
-            data = breakout_strategy(data)
-            last_signal = data['Signal'].iloc[-1]
+            data = apply_strategies(data)
+            #print(data)
+            last_signal = data['Combined_Signal'].iloc[-1]
             price = float(client.get_symbol_ticker(symbol=SYMBOL)['price'])
 
             logger.info(f"Sinal atual: {last_signal}, Preço atual: {price}")
@@ -194,7 +168,7 @@ def execute_bot():
                 logger.info("Sinal de Venda detectado!")
                 execute_order_with_risk(SYMBOL, SIDE_SELL, QUANTITY, price)
 
-            time.sleep(15)
+            time.sleep(60)
         except KeyboardInterrupt:
             logger.info("Bot encerrado manualmente.")
             break
@@ -202,51 +176,5 @@ def execute_bot():
             logger.error(f"Erro: {e}")
             time.sleep(60)
 
-# Dashboard com Dash
-def create_dashboard():
-    app = Dash(__name__)
-
-    app.layout = html.Div([
-        html.H1("Histórico de Lucros e Perdas"),
-        dcc.Graph(id='profit-graph'),
-        dcc.Interval(id='update-interval', interval=1000, n_intervals=0)
-    ])
-
-    @app.callback(
-        Output('profit-graph', 'figure'),
-        Input('update-interval', 'n_intervals')
-    )
-    def update_graph(n):
-        if os.path.exists(HISTORY_FILE):
-            df = pd.read_csv(HISTORY_FILE)
-            fig = {
-                'data': [{
-                    'x': df['timestamp'],
-                    'y': df['profit'].cumsum(),
-                    'type': 'line',
-                    'name': 'Lucro Acumulado'
-                }],
-                'layout': {
-                    'title': 'Histórico de Lucros/Perdas',
-                    'xaxis': {'title': 'Tempo'},
-                    'yaxis': {'title': 'Lucro'}
-                }
-            }
-            return fig
-        return {'data': [], 'layout': {'title': 'Sem Dados'}}
-
-    app.run_server(debug=False, use_reloader=False)
-
-# Multithreading
-# def main():
-#     bot_thread = threading.Thread(target=execute_bot)
-#     dashboard_thread = threading.Thread(target=create_dashboard)
-#     bot_thread.start()
-#     dashboard_thread.start()
-#     bot_thread.join()
-#     dashboard_thread.join()
-
-
 if __name__ == "__main__":
-    #main()
     execute_bot()
